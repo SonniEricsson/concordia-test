@@ -23,6 +23,8 @@ from concordia.components import agent as agent_components
 from concordia.language_model import language_model
 from concordia.typing import prefab as prefab_lib
 
+from university.components import observation_context
+
 _DEFAULT_OBSERVATION_HISTORY_LENGTH = 1_000_000
 _DEFAULT_SITUATION_PERCEPTION_HISTORY_LENGTH = 25
 _DEFAULT_SELF_PERCEPTION_HISTORY_LENGTH = 1_000_000
@@ -75,6 +77,8 @@ class Entity(prefab_lib.Prefab):
     entity_goal = self.params.get('goal', '')
     randomize_choices = self.params.get('randomize_choices', True)
     prefix_entity_name = self.params.get('prefix_entity_name', True)
+    extra_components = dict(self.params.get("extra_components", {})
+)
     observation_history_length = self.params.get(
         'observation_history_length',
         _DEFAULT_OBSERVATION_HISTORY_LENGTH
@@ -106,12 +110,22 @@ class Entity(prefab_lib.Prefab):
 
     observation_key = (
         agent_components.observation.DEFAULT_OBSERVATION_COMPONENT_KEY)
-    observation = agent_components.observation.LastNObservations(
-        history_length=observation_history_length,  # pyrefly: ignore[bad-argument-type]
-        pre_act_label=(
-            '\nEvents so far (ordered from least recent to most recent)'
-        ),
-    )
+
+    # Summarize old observations of agents if context history gets too large.
+    if self.params.get("summarize_observations", False):
+      observation = observation_context.ObservationContext(
+        model=model,
+        history_length=self.params.get("observation_history_length", 30),
+        batch_size=self.params.get("observation_summary_batch_size", 20),
+        summary_max_tokens=self.params.get("observation_summary_max_tokens", 400),
+      )
+    else:
+      observation = agent_components.observation.LastNObservations(
+          history_length=observation_history_length,  # pyrefly: ignore[bad-argument-type]
+          pre_act_label=(
+              '\nEvents so far (ordered from least recent to most recent)'
+          ),
+      )
 
     # Create the goal component early so perception components can reference it.
     if entity_goal:
@@ -127,13 +141,20 @@ class Entity(prefab_lib.Prefab):
     # intermediate reasoning chain (not just the final action prompt)
     # explicitly considers the agent's goal.
     goal_components = [goal_key] if goal_key else []
+    extra_components_keys = list(extra_components)
+    if self.params.get("summarize_observations", False):
+      observation_components = [observation_key]
+    else:
+      observation_components = []
 
     situation_perception_key = 'SituationPerception'
     situation_perception = (
         agent_components.question_of_recent_memories.SituationPerception(
             model=model,
             num_memories_to_retrieve=situation_perception_history_length,
-            components=goal_components,
+            components=(
+                goal_components + extra_components_keys + observation_components
+            ),
             pre_act_label=(
                 f'\nQuestion: What situation is {entity_name} in right now?'
                 '\nAnswer'
@@ -145,9 +166,12 @@ class Entity(prefab_lib.Prefab):
         agent_components.question_of_recent_memories.SelfPerception(
             model=model,
             num_memories_to_retrieve=self_perception_history_length,
-            components=goal_components + [
-                situation_perception_key,
-            ],
+            components=(
+              goal_components
+              + extra_components_keys
+              + observation_components
+              + [situation_perception_key]
+            ),
             pre_act_label=(
                 f'\nQuestion: What kind of person is {entity_name}?\nAnswer'
             ),
@@ -158,10 +182,15 @@ class Entity(prefab_lib.Prefab):
     person_by_situation = agent_components.question_of_recent_memories.PersonBySituation(
         model=model,
         num_memories_to_retrieve=person_by_situation_history_length,
-        components=goal_components + [
-            self_perception_key,
-            situation_perception_key,
-        ],
+        components=(
+          goal_components
+          + extra_components_keys
+          + observation_components
+          + [
+              self_perception_key,
+              situation_perception_key,
+          ]
+        ),
         pre_act_label=(
             f'\nQuestion: What would a person like {entity_name} do in '
             'a situation like this?\nAnswer'
@@ -178,6 +207,7 @@ class Entity(prefab_lib.Prefab):
         memory_key: memory,
     }
 
+    components_of_agent.update(extra_components)
     component_order = list(components_of_agent.keys())
 
     if overarching_goal is not None:

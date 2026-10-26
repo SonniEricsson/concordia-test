@@ -251,7 +251,10 @@ class GameMaster(prefab_lib.Prefab):
     )
     event_resolution = gm_components.event_resolution.EventResolution(
         model=model,
-        event_resolution_steps=(identity_without_prefix,),
+        event_resolution_steps=(
+          (identity_without_prefix,)
+          + tuple(self.params.get("adjust_event_resolution", ()))
+        )
     )
 
     terminator_key = gm_components.terminate.DEFAULT_TERMINATE_COMPONENT_KEY
