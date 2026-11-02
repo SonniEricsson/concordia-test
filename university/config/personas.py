@@ -8,6 +8,8 @@ from university.components.university_state import UniversityState
 from university.components.relationship_state import RelationshipState
 from university.components.communication_state import CommunicationState
 from university.components.weekly_plan import WeeklyPlan
+from university.components.personal_notebook import PersonalNotebook
+from concordia.components.agent import constant
 
 @dataclass(frozen=True)
 class AgentProfile:
@@ -171,6 +173,7 @@ def make_agents(
     relationships: RelationshipState,
     communication: CommunicationState,
     plan: WeeklyPlan,
+    notebook: PersonalNotebook,
     prefab: str = "basic__Entity",
 ) -> tuple[
     list[prefab_lib.InstanceConfig],
@@ -181,14 +184,31 @@ def make_agents(
   memories = {}
 
   for persona in profiles:
+    # Included in the agent's action prompt in every scene.
     goal = (
-      f"Your role is {persona.role} in the "
-      f"{persona.department} department. "
-      f"Your background is: {persona.background} "
-      f"Your traits are: {persona.traits} "
-      f"Your skillset is: {persona.skillset} "
-      f"Your motivation is: {persona.motivation} "
-      f"Your goals are: {' '.join(persona.goals)}"
+      #f"Your role is {persona.role} in the "
+      #f"{persona.department} department. "
+      #f"Your background is: {persona.background} "
+      #f"Your traits are: {persona.traits} "
+      #f"Your skillset is: {persona.skillset} "
+      #f"Your motivation is: {persona.motivation} "
+      "Your goals are:\n" "\n".join(persona.goals)
+    )
+
+    agent_profile = constant.Constant(
+        state=json.dumps(
+            {
+              "name": persona.name,
+              "role": persona.role,
+              "department": persona.department,
+              "background": persona.background,
+              "traits": persona.traits,
+              "skillset": persona.skillset,
+              "motivation": persona.motivation,
+            },
+            indent=2,
+        ),
+        pre_act_label="AGENT PROFILE",
     )
 
     # Agents can read current state of the University.
@@ -220,7 +240,7 @@ def make_agents(
        pre_act_label="CURRENT RELATIONSHIP STATES",
     )
 
-    # Agents can read all their sent and received private messages.
+    # Agents can read all their recently sent and received private messages.
     communication_state = report_function.ReportFunction(
       function=lambda name=persona.name: json.dumps(
         communication.get_messages(name),
@@ -238,6 +258,14 @@ def make_agents(
        pre_act_label="CURRENT WEEKLY PLAN",
     )
 
+    personal_notebook = report_function.ReportFunction(
+       function=lambda name=persona.name: json.dumps(
+          notebook.get_notebook(name),
+          indent=2,
+       ),
+       pre_act_label="CURRENT PRIVATE NOTEBOOK",
+    )
+
     agents.append(
       prefab_lib.InstanceConfig(
         prefab=prefab,
@@ -247,16 +275,20 @@ def make_agents(
           "goal": goal,
           "prefix_entity_name": False, # Don't start answer with entity name, so answers can be only JSON.
           "extra_components": { # Need to add extra_components to basic prefab.
+              "AgentProfile": agent_profile,
               "UniversityState": university_state,
               "OwnedTasks": unfinished_tasks,
               "RelationshipState": relationship_state,
               "CommunicationState": communication_state,
               "WeeklyPlan": weekly_plan,
+              "PersonalNotebook": personal_notebook,
           },
           "summarize_observations": True,
+          "retrieve_memory": True,
           "observation_history_length": 30,
           "observation_summary_batch_size": 20,
-          "observation_summary_max_tokens": 400,
+          "observation_summary_max_tokens": 4096,
+          "observation_summary_max_words": 300,
           # Set these parameters to 0, so agents don't retrieve observations that have already been summarized.
           "situation_perception_history_length": 0, # Determines situation.
           "self_perception_history_length": 0, # Determines the personality.
@@ -265,6 +297,7 @@ def make_agents(
       )
     )
 
+    # Initial observations.
     memories[persona.name] = [
       f"Role: {persona.role}.",
       f"Background: {persona.background}",

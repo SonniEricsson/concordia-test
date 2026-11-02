@@ -94,6 +94,7 @@ def main() -> None:
     "relationship_states": results["relationship_states"].get_state()["state"],
     "communication_state": results["communication_state"].get_state()["state"],
     "planning_state": results["planning_state"].get_state()["state"],
+    "personal_notebook": results["personal_notebook"].get_state()["state"],
     "agents": results["agents"],
   }
 

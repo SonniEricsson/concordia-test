@@ -22,6 +22,7 @@ from concordia.associative_memory import basic_associative_memory
 from concordia.components import agent as agent_components
 from concordia.language_model import language_model
 from concordia.typing import prefab as prefab_lib
+from university.components.memory_retrieval import MemoryRetrieval
 
 from university.components import observation_context
 
@@ -77,8 +78,8 @@ class Entity(prefab_lib.Prefab):
     entity_goal = self.params.get('goal', '')
     randomize_choices = self.params.get('randomize_choices', True)
     prefix_entity_name = self.params.get('prefix_entity_name', True)
-    extra_components = dict(self.params.get("extra_components", {})
-)
+    extra_components = dict(self.params.get("extra_components", {}))
+
     observation_history_length = self.params.get(
         'observation_history_length',
         _DEFAULT_OBSERVATION_HISTORY_LENGTH
@@ -117,7 +118,8 @@ class Entity(prefab_lib.Prefab):
         model=model,
         history_length=self.params.get("observation_history_length", 30),
         batch_size=self.params.get("observation_summary_batch_size", 20),
-        summary_max_tokens=self.params.get("observation_summary_max_tokens", 400),
+        summary_max_tokens=self.params.get("observation_summary_max_tokens", 4096),
+        summary_max_words=self.params.get("observation_summary_max_words", 300),
       )
     else:
       observation = agent_components.observation.LastNObservations(
@@ -142,10 +144,23 @@ class Entity(prefab_lib.Prefab):
     # explicitly considers the agent's goal.
     goal_components = [goal_key] if goal_key else []
     extra_components_keys = list(extra_components)
+
+    # Add observation keys to components of each agent for summarization.
     if self.params.get("summarize_observations", False):
       observation_components = [observation_key]
     else:
       observation_components = []
+
+    # Add memory retrieval instance to each agent.
+    if self.params.get("retrieve_memory", False):
+      memory_components = (
+        goal_components + extra_components_keys + [observation_key]
+      )
+      extra_components["MemoryRetrieval"] = MemoryRetrieval(
+        model=model,
+        components=memory_components,
+      )
+      extra_components_keys = list(extra_components)
 
     situation_perception_key = 'SituationPerception'
     situation_perception = (

@@ -80,19 +80,14 @@ class RelationshipState(
     personal_relationships = self.create_personal_scores(agents)
     department_relationships = self.create_department_scores(departments)
 
-    # Last event_id an agent used as evidence for a relationship update.
-    last_reflection_id = {}
-    for agent in agents:
-      last_reflection_id[agent] = 0
-
     self._state: dict[str, Any] = {
       "departments": departments,
       "agents": agents,
-      "next_reflection_id": 1,
+      "next_update_id": 1,
       "history": list(history or []),
       "personal_relationships": personal_relationships,
       "department_relationships": department_relationships,
-      "last_reflection_id": last_reflection_id,
+      #"last_reflection_id": last_reflection_id,
     }
 
     self.set_personal_relationships(initial_personal_relationships or {})
@@ -184,51 +179,34 @@ class RelationshipState(
       self,
       agent: str,
       target: str,
-      dimensions: PersonalDimensionScores,
+      update: dict[str, Any],
       reasoning: str,
-      week: int,
-  ) -> dict[str, Any]:
+  ) -> None:
+    scores = update.get("scores")
+    if not isinstance(scores, dict) or set(scores) != set(PERSONAL_DIMENSIONS):
+      raise ValueError("Relationship update scores don't match existing dimensions.")
+
+    for score in scores.values():
+      if type(score) is not int or not MIN_SCORE <= score <= MAX_SCORE:
+        raise ValueError("Provided scores for relationship update are not valid integers.")
+
     """Update personal relationship from agent."""
-    if self.check_personal_pair(agent, target):
-      relationship = self._state["personal_relationships"][agent][target]
-      previous_scores = dict(relationship)
-      #if delta:
-      #  for dimension, update_value in dimensions.items():
-      #    new_value = relationship[dimension] + update_value
-      #    relationship[dimension] = max(MIN_SCORE, min(MAX_SCORE, new_value))
-      for dimension, update_value in dimensions.items():
-        relationship[dimension] = max(MIN_SCORE, min(MAX_SCORE, update_value))
+    relationship = self._state["personal_relationships"][agent][target]
+    old_scores = dict(relationship)
 
-      self._state["personal_relationships"][agent][target] = relationship
+    for dimension, update_value in scores.items():
+      relationship[dimension] = update_value
 
-      outcome = f"Relationship between {agent} and {target} has been updated."
-      status = "succeeded"
-      return self.record_event(
-          entity_a=agent,
-          entity_b=target,
-          relationship_type="personal",
-          update=dict(relationship),
-          previous_scores=previous_scores,
-          reasoning=reasoning,
-          week=week,
-          outcome=outcome,
-          status=status,
-      )
-    else:
-      outcome = f"{agent} does not have a valid relationship with {target}."
-      status = "rejected"
-      failure_type = "invalid_target"
-      return self.record_event(
-          entity_a=agent,
-          entity_b=target,
-          relationship_type="personal",
-          update=dimensions,
-          reasoning=reasoning,
-          week=week,
-          outcome=outcome,
-          status=status,
-          failure_type=failure_type,
-      )
+    self._state["personal_relationships"][agent][target] = relationship
+
+    self.record_event(
+      entity_a=agent,
+      update=update,
+      old_scores=old_scores,
+      outcome=f"Relationship between {agent} and {target} has been updated.",
+      reasoning=reasoning,
+      status="succeeded",
+    )
 
   def update_department_relationship(
       self,
@@ -261,7 +239,6 @@ class RelationshipState(
           update=dict(relationship),
           previous_scores=previous_scores,
           reasoning=reasoning,
-          week=week,
           outcome=outcome,
           status=status,
       )
@@ -275,7 +252,6 @@ class RelationshipState(
           relationship_type="department",
           update=dimensions,
           reasoning=reasoning,
-          week=week,
           outcome=outcome,
           status=status,
           failure_type=failure_type,
@@ -287,11 +263,13 @@ class RelationshipState(
       evidence: list[dict[str, Any]],
   ) -> dict[str, Any]:
     """Get relationships and recent events since the last reflection of an agent."""
-    last_reflection_id = self._state["last_reflection_id"].get(agent)
+    #last_reflection_id = self._state["last_reflection_id"].get(agent)
     recent_events = []
+    week = self._calendar.get_week()
     # Evidence consists of university events.
     for event in evidence:
-      if event.get("event_id") > last_reflection_id:
+      #if event.get("event_id") > last_reflection_id:
+      if event["week"] == week:
         recent_events.append(event)
     reflection_state = {
       "reflection_agent": agent,
@@ -308,7 +286,7 @@ class RelationshipState(
       evidence: list[dict[str, Any]],
   ) -> list[dict[str, Any]]:
     """Resolve a proposed action from an agent and apply relationship updates, called during run_simulation()."""
-    current_week = self._calendar.get_week()
+    week = self._calendar.get_week()
     history_length = len(self._state["history"])
     reflection_state = self.get_reflection_state(agent, evidence)
     recent_events = {}
@@ -324,178 +302,87 @@ class RelationshipState(
       outcome = f"{agent} generated an invalid relationship update: {error}"
       self.record_event(
         entity_a=agent,
-        week=current_week,
         update=invalid_proposed_json,
         outcome=outcome,
         status="rejected",
-        failure_type="invalid_json"
+        failure_type="invalid_json",
       )
     else:
-      if proposed_json.get("action") != "update_relationship":
-        outcome = f"{agent} did not choose update_relationship as an action."
+      # Agent can update relationship with multiple colleagues.
+      relationship_updates = proposed_json.get("relationship_updates")
+      if not isinstance(relationship_updates, list):
+        invalid_relationship_updates = {
+          "invalid_response": relationship_updates,
+        }
+        outcome = f"relationship_updates is not a valid list."
         self.record_event(
           entity_a=agent,
-          week=current_week,
-          update=proposed_json,
+          update=invalid_relationship_updates,
           outcome=outcome,
           status="rejected",
-          failure_type="invalid_action"
+          failure_type="invalid_relationship_updates_list",
+        )
+      elif relationship_updates == []:
+        outcome = f"No relationship changes for {agent}."
+        status = "succeeded"
+        self.record_event(
+          entity_a=agent,
+          update=[],
+          outcome=outcome,
+          status=status,
         )
       else:
-        # Apply relationship update if update is valid.
-        self.apply_update(agent, proposed_json, current_week, recent_events)
+        for update in relationship_updates:
+          # Apply relationship update if update is valid.
+          self.apply_update(agent, update, recent_events)
 
     return copy.deepcopy(self._state["history"][history_length:])
 
   def apply_update(
       self,
       agent: str,
-      proposed_json: dict[str, Any],
-      week: int,
+      update: dict[str, Any],
       recent_events: dict[str, dict[str, Any]],
   ) -> None:
     """Apply relationship updates of agent."""
-    # Agent can update relationship with multiple colleagues.
-    updates = proposed_json.get("updates")
-    if not isinstance(updates, list):
-      outcome = f"{agent} provided an invalid relationship updates list."
-      status = "rejected"
-      failure_type = "invalid_relationship_list"
+    try:
+      if not isinstance(update, dict) or update == {}:
+        raise ValueError("Relationship update has an invalid structure.")
+
+      target = update.get("target")
+      if not self.check_personal_pair(agent, target):
+        raise ValueError("Target for relationship update is not valid.")
+
+      evidence_ids = update.get("evidence_ids")
+      if not isinstance(evidence_ids, list) or evidence_ids == []:
+        raise ValueError("Evidence list for relationship update is not a valid list.")
+
+      reasoning = update.get("reasoning")
+      if not isinstance(reasoning, str) or reasoning == "":
+        raise ValueError("Reasoning for relationship update is not a valid string.")
+
+      for id in evidence_ids:
+        if id not in recent_events:
+          raise ValueError("Provided evidence_id for relationship update is not a recent event.")
+        if recent_events[id].get("agent") != target:
+          raise ValueError("Provided evidence_id for relationship update is not describing an action of the target.")
+
+      evidence = []
+      for id in evidence_ids:
+        evidence.append(f"Event {id}: {recent_events[id].get("outcome")}")
+      full_reasoning = reasoning + "\nEvents as evidence:\n" + "\n".join(evidence)
+
+      self.update_personal_relationship(agent, target, update, full_reasoning)
+
+    except ValueError as error:
       self.record_event(
         entity_a=agent,
-        update=[],
-        week=week,
-        outcome=outcome,
-        status=status,
-        failure_type=failure_type,
+        update=update,
+        relationship_type="personal",
+        outcome=str(error),
+        status="rejected",
+        failure_type="invalid_relationship_update",
       )
-
-    elif updates != []:
-      valid_updates = []
-      for update in updates:
-        valid_update = True
-
-        if not isinstance(update, dict) or update == {}:
-          outcome = f"{agent} provided an update with an invalid structure."
-          status = "rejected"
-          failure_type = "invalid_update"
-          valid_update = False
-        else:
-          target = update.get("target")
-          scores = update.get("scores")
-          #delta = update.get("delta")
-          evidence_ids = update.get("evidence_ids")
-          reasoning = update.get("reasoning")
-
-          if isinstance(target, str):
-            relationship = self._state["personal_relationships"][agent].get(target)
-            if relationship != None:
-              relationship = dict(relationship)
-          else:
-            relationship = None
-
-          if not isinstance(scores, dict) or set(scores) != set(PERSONAL_DIMENSIONS):
-            outcome = f"{agent} provided update scores that don't match existing dimensions."
-            status = "rejected"
-            failure_type = "invalid_scores"
-            valid_update = False
-          elif not isinstance(target, str) or target not in self._state["agents"]:
-            outcome = f"{agent} tried to update the relationship with a target that doesn't exist: {target}"
-            status = "rejected"
-            failure_type = "invalid_target"
-            valid_update = False
-          elif target == agent:
-            outcome = f"{agent} tried to update the relationship with themself as the target."
-            status = "rejected"
-            failure_type = "invalid_target"
-            valid_update = False
-          elif not isinstance(reasoning, str) or reasoning == "":
-            outcome = f"{agent} did not provide a valid reasoning for the relationship update."
-            status = "rejected"
-            failure_type = "invalid_reasoning"
-            valid_update = False
-          elif not isinstance(evidence_ids, list) or evidence_ids == []:
-            outcome = f"{agent} did not provide a valid evidence list for the relationship update."
-            status = "rejected"
-            failure_type = "invalid_evidence"
-            valid_update = False
-          else:
-            for id in evidence_ids:
-              if id not in recent_events:
-                outcome = f"{agent} provided evidence {id} for the relationship update, but it is not a recent event."
-                status = "rejected"
-                failure_type = "invalid_evidence_id"
-                valid_update = False
-              elif recent_events[id].get("agent") != target:
-                outcome = f"{agent} provided evidence {id} for the relationship update, but it is not describing an action of {target}."
-                status = "rejected"
-                failure_type = "invalid_evidence"
-                valid_update = False
-            for dimension, score in scores.items():
-              if not isinstance(score, int):
-                outcome = f"{agent} provided relationship scores that are not integers."
-                status = "rejected"
-                failure_type = "invalid_scores"
-                valid_update = False
-
-        # Collect valid updates in a list.
-        if valid_update:
-          valid_updates.append((target, scores, evidence_ids, reasoning))
-
-        else:
-          # Record invalid updates.
-          self.record_event(
-            entity_a=agent,
-            entity_b=target,
-            relationship_type="personal",
-            update=scores,
-            previous_scores=relationship,
-            reasoning=reasoning,
-            week=week,
-            outcome=outcome,
-            status=status,
-            failure_type=failure_type,
-          )
-
-      #if len(valid_updates) == len(updates):
-      # Update valid relationships, even if some updates are invalid (don't reject whole batch).
-      for target, scores, evidence_ids, reasoning in valid_updates:
-        evidence = []
-        for id in evidence_ids:
-          evidence.append(f"Event {id}: {recent_events[id].get("outcome")}")
-        full_reasoning = reasoning + "\nEvents as evidence:\n" + "\n".join(evidence)
-
-        self.update_personal_relationship(
-            agent=agent,
-            target=target,
-            dimensions=scores,
-            reasoning=full_reasoning,
-            week=week,
-        )
-
-      if recent_events != {}:
-        # Save the last referenced university event id.
-        self._state["last_reflection_id"][agent] = max(
-          max(recent_events.keys()),
-          self._state["last_reflection_id"].get(agent),
-        )
-
-    else:
-      outcome = f"No relationship changes for {agent}."
-      status = "succeeded"
-      self.record_event(
-        entity_a=agent,
-        updates=[],
-        week=week,
-        outcome=outcome,
-        status=status,
-      )
-
-      #if recent_events != {}:
-      #  self._state["last_reflection_id"][agent] = max(
-      #    max(recent_events.keys()),
-      #    self._state["last_reflection_id"].get(agent),
-      #  )
 
   # Assign current step to each event.
   #def assign_step(
@@ -512,35 +399,37 @@ class RelationshipState(
     self,
     *,
     entity_a: str,
-    entity_b: str | None = None,
-    relationship_type: str | None = None,
-    update: dict[str, int] | None = None,
-    previous_scores: dict[str, int] | None = None,
-    reasoning: str | None = None,
-    week: int,
+    update: dict[str, Any],
+    old_scores: dict[str, int] | None = None,
     outcome: str,
+    reasoning: str | None = None,
     status: STATUS_OPTIONS,
     failure_type: str | None = None,
   ) -> dict[str, Any]:
     """Record event and add it to the state history."""
+    entity_b = update.get("target")
+    new_scores = update.get("scores")
+    relationship_type = "personal"
+    if reasoning == None:
+      reasoning = update.get("reasoning")
+    week = self._calendar.get_week()
     event = {
-        "reflection_id": len(self._state["history"]) + 1,
+        "update_id": len(self._state["history"]) + 1,
         "reflection_type": "relationship_update",
         #"step": None,
         "week": week,
-        "phase": self._calendar.get_phase(),
         "relationship_type": relationship_type,
         "entity_a": entity_a,
         "entity_b": entity_b,
-        "update": update,
-        "previous_scores": previous_scores,
+        "new_scores": new_scores,
+        "old_scores": old_scores,
         "reasoning": reasoning,
         "outcome": outcome,
         "status": status,
         "failure_type": failure_type,
     }
 
-    self._state["next_reflection_id"] += 1
+    self._state["next_update_id"] += 1
     self._state["history"].append(event)
 
     self._logging_channel({

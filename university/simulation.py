@@ -17,6 +17,8 @@ from university.components.university_state import UniversityState
 from university.components.relationship_state import RelationshipState
 from university.components.communication_state import CommunicationState, DEFAULT_MAX_MESSAGE_WORDS
 from university.components.weekly_plan import WeeklyPlan, DEFAULT_MAX_PLAN_WORDS
+from university.components.university_information import UniversityInformation
+from university.components.personal_notebook import PersonalNotebook
 from university.config import personas
 
 def configure_discussion_scene(
@@ -52,6 +54,12 @@ def configure_discussion_scene(
                 "Private messages are claims and should not be treated as verified university facts.\n"
                 "Do not invent information, tasks, results or approvals.\n"
                 f"A message should have at most {DEFAULT_MAX_MESSAGE_WORDS} words.\n"
+                f"There are {config.COMMUNICATION_ROUNDS_PER_WEEK} communication rounds, so your conversations "
+                f"with your colleagues can have at most {2 * config.COMMUNICATION_ROUNDS_PER_WEEK} messages.\n"
+                "Read your current conversations from this week.\n"
+                "Start a conversation or reply to your current conversation with your colleagues for this week.\n"
+                "Try to answer questions from your colleagues before you ask questions, "
+                "and if you don't have enough information then state that you don't know the answer.\n"
                 "Return exactly one JSON object without Markdown formatting:\n"
                 '{"private_messages":[{"recipient":"Alice","message":"..."}]}\n'
                 "Use exact colleague names. Do not message yourself.\n"
@@ -104,8 +112,10 @@ def configure_discussion_scene(
               "Do not invent a task_id, instead refer to their title "
               "or use the task_id from AUTHORITATIVE UNIVERSITY STATE.\n"
               "Always try to find some work, and if nothing is available, state it explicitly.\n"
-              "Your plan will be public. Do not share private information "
-              "unless you actively choose to share it.\n"
+              #"Your plan will be public. Do not share private information "
+              #"unless you actively choose to share it.\n"
+              "Your plan will be private. Your colleagues only learn about your intentions "
+              "through private messages during the communication phase.\n"
               "Return exactly one JSON object without Markdown formatting:\n"
               '{"weekly_plan":"..."}\n'
           ),
@@ -215,7 +225,7 @@ def configure_scenes(
 
           "Return one JSON object without Markdown formatting using one of these forms:\n"
           '{"action":"create_task","title":"...","task_type":"organizational",'
-          '"description":"...","department":"Department of Computer Science","effort":2,'
+          '"description":"...","department":"Computer Science","effort":2,'
           '"reward":2,"allowed_roles":[],"requested_budget":0,"change_state":true,"reasoning":"..."}\n'
           '{"action":"claim_task","task_id":"...","reasoning":"..."}\n'
           '{"action":"work_on_task","task_id":"...","reasoning":"..."}\n'
@@ -244,9 +254,11 @@ def configure_scenes(
               "Reflect on your relationships, observations, discussions and events "
               f"that have happened in this week {week}.\n"
               "Make an update on your relationship scores with your colleagues.\n"
-              "Read CURRENT RELATIONSHIP STATES, and "
-              "CURRENT PRIVATE MESSAGES before choosing an update.\n"
+              "Read CURRENT RELATIONSHIP STATES, CURRENT PRIVATE MESSAGES and "
+              "CURRENT PRIVATE NOTEBOOK before choosing an update.\n"
+              "You have to provide update scores for relationships, and reflection notes.\n"
 
+              "Regarding updating relationship scores, follow these rules:\n"
               "reflection_agent defines the reflecting agent.\n"
               "current_relationships contains the absolute scores for the agent's relationships.\n"
               "recent_events contains events as evidence for the update since the previous reflection.\n"
@@ -265,15 +277,32 @@ def configure_scenes(
               "Do not invent events that have not happened.\n"
               "Do not infer colleague's private opinions of you.\n"
 
+              "Regarding reflection notes, follow these rules:\n"
+              "Notes have three categories: personal, relationship and other. "
+              "Personal notes contain your own thoughts, interpretations, self-assessments and plans. "
+              "Relationship notes contain your view on your colleagues. You should keep one note for each relevant colleague, "
+              "and you should keep updating that note when your view on them or relationship scores change. "
+              "Other notes contain any other miscellaneous topic.\n"
+              "reflection_notes should include your updates for your personal notebook.\n"
+              "You can either create, update or discard notes.\n"
+              "Update existing notes if your opinion changes instead of creating a new note.\n"
+              "When updating or discarding a note, provide the exact note_id of the note.\n"
+
+
               "Return exactly one JSON object without Markdown formatting:\n"
-              '{"action":"update_relationship","updates":[{"target":"...",'
-              '"scores":{"trust":1,"respect":1},"evidence_ids":[6,7],"reasoning":"..."}]}\n'
-              "Updates can include multiple people. Only include colleagues with relationship changes.\n"
-              "If there are no relationship changes, then updates should be an empty list and the JSON should look like this:\n"
-              '{"action":"update_relationship","updates":[]}\n'
+              '{"relationship_updates":[{"target":"...","scores":{"trust":1,"respect":1},'
+              '"evidence_ids":[6,7],"reasoning":"..."}],"reflection_notes":[{"action":"create_note",'
+              '"category":"personal","title":"...","content":"..."},{"action":"update_note",'
+              '"note_id":"note_6","category":"relationship","target":"Bob","content":"..."},'
+              '{"action":"discard_note","note_id":"note_3","category":"other"},'
+              '{"action":"update_note","note_id":"note_7","category":"personal","content":"..."}]}\n'
+              "Relationship updates can include multiple people. Only include colleagues with relationship changes.\n"
+              "If there are no relationship changes, then relationship_updates should be an empty list.\n"
               "The given scores in the update will be set as the absolute new scores, not added or subtracted.\n"
               "Consider your current relationship scores before setting new scores.\n"
               "Do not include yourself for relationship updates.\n"
+              "Try to always reflect and add or update personal notes.\n"
+              "If there are no relationship changes, then you don't have to update relationship notes.\n"
             ),
             tag="reflection",
         ),
@@ -308,9 +337,11 @@ def run_simulation(
 
   agents = []
   agent_roles = {}
+  agent_departments = {}
   for profile in profiles:
     agents.append(profile.name)
     agent_roles[profile.name] = profile.role
+    agent_departments[profile.name] = profile.department
 
   # Create scenes.
   scenes = configure_scenes(agents, config)
@@ -364,6 +395,17 @@ def run_simulation(
 
   weekly_plan = WeeklyPlan(calendar=calendar)
 
+  university_information = UniversityInformation(
+    calendar=calendar,
+    departments=config.DEPARTMENTS,
+    agent_departments=agent_departments,
+  )
+
+  personal_notebook = PersonalNotebook(
+    agents=agents,
+    calendar=calendar,
+  )
+
   # Agents first make a proposal, then proposal should be resolved during event resolution.
   def resolve_conclusion(
       document,
@@ -372,6 +414,7 @@ def run_simulation(
   ):
     """Resolve agent action and before it is propagated to the agents."""
     phase = calendar.get_phase()
+    week = calendar.get_week()
 
     # Event resolution from components\game_master\event_resolution.py
     event_resolver = university.get_entity().get_component(
@@ -400,11 +443,15 @@ def run_simulation(
         processed_messages = []
         for message in messages:
           processed_messages.append(json.dumps(message, indent=2))
+          if message["status"] == "succeeded":
+            # Add observations about the messages to the recipient's observations for the context summary.
+            recipient_observation = f"Private message from {active_player_name}:\n" + json.dumps(message, indent=2)
+            make_observation.add_to_queue(message["recipient"], recipient_observation)
         # Add private messages to observations of acting agent.
         observation = "Private Communication Feedback:\n" + "\n".join(processed_messages)
         make_observation.add_to_queue(active_player_name, observation)
         # Public conclusion that all agents can see.
-        conclusion = f"PRIVATE COMMUNICATION for {active_player_name} has ended."
+        conclusion = f"PRIVATE COMMUNICATION TURN for {active_player_name} was processed."
       except ValueError as error:
         error_observation = f"Private Communication Feedback: {error}"
         # Send error information only to the acting agent.
@@ -414,10 +461,12 @@ def run_simulation(
     # Resolve action during planning scene.
     if phase == "planning":
       action = weekly_plan.resolve_action(active_player_name, proposed_action)
+      observation = "Private Weekly Plan Feedback:\n" + json.dumps(action, indent=2)
+      make_observation.add_to_queue(active_player_name, observation)
       if action.get("status") == "succeeded":
-        conclusion = f"WEEKLY PLAN for {active_player_name}: {action.get("plan")}"
+        conclusion = f"WEEKLY PLAN was created for {active_player_name}."
       elif action.get("status") == "rejected":
-        conclusion = f"WEEKLY PLAN for {active_player_name} was rejected: {action.get("plan")}"
+        conclusion = f"WEEKLY PLAN for {active_player_name} was rejected."
 
     # Resolve action during administration scene.
     if phase == "administration":
@@ -425,8 +474,8 @@ def run_simulation(
 
       observation = {}
 
-      organizational_keys = ["event_id", "event_type", "agent", "action", "task_id", "week", "outcome", "status", "failure_type"]
-      personal_keys = ["event_id", "event_type", "agent", "action", "task_id", "week"]
+      organizational_keys = ["event_id", "agent", "action", "task_id", "week", "outcome", "status", "failure_type"]
+      personal_keys = ["event_id", "agent", "action", "task_id", "week"]
 
       task_type = ""
       if action.get("task_id") != None:
@@ -438,7 +487,7 @@ def run_simulation(
         for key in personal_keys:
           observation[key] = action[key]
         observation["outcome"] = "Outcome of this event is not visible, because it is a personal task."
-        agent_observation = f"Administration Feedback: {action.get("outcome")}"
+        agent_observation = f"Administration Feedback:\n" + json.dumps(action, indent=2)
         # Send individual observation only to acting agent for full information feedback.
         make_observation.add_to_queue(active_player_name, agent_observation)
 
@@ -452,22 +501,39 @@ def run_simulation(
     elif phase == "reflection":
       evidence = university.get_reflection_evidence(active_player_name)
       updates = relationships.resolve_update(active_player_name, proposed_action, evidence)
-      update_outcomes = []
-      successes = 0
-      rejections = 0
+      reflections = personal_notebook.resolve_reflection(active_player_name, proposed_action)
+      results = {
+        "week": week,
+        "relationship_updates": updates,
+        "reflection_notes": reflections,
+      }
+      #update_outcomes = []
+      relationship_successes = 0
+      reflections_successes = 0
+      relationship_rejections = 0
+      reflections_rejections = 0
       for update in updates:
         if update["status"] == "succeeded":
-          successes += 1
-        elif update["status"] == "rejected":
-          rejections += 1
-        update_outcomes.append("Reflection " + str(update.get("reflection_id")) + ": " + update.get("outcome"))
+          relationship_successes += 1
+        if update["status"] == "rejected":
+          relationship_rejections += 1
+      for reflection in reflections:
+        if reflection["status"] == "succeeded":
+          reflections_successes += 1
+        if reflection["status"] == "rejected":
+          reflections_rejections += 1
+        #update_outcomes.append("Reflection " + str(update.get("reflection_id")) + ": " + update.get("outcome"))
 
       # Send individual observation only to acting agent for full information feedback.
-      agent_observation = "Reflection Feedback:\n" + "\n".join(update_outcomes)
+      #agent_observation = "Reflection Feedback:\n" + "\n".join(update_outcomes)
+      agent_observation = "Reflection Feedback:\n" + json.dumps(results, indent=2)
       make_observation.add_to_queue(active_player_name, agent_observation)
 
       # Only publicly record the status of updates, not the actual values, so they stay private.
-      conclusion = f"RELATIONSHIP REFLECTION FOR {active_player_name}: {successes} succeeded, {rejections} rejected."
+      conclusion = (
+        f"RELATIONSHIP UPDATES FOR {active_player_name}: {relationship_successes} succeeded, {relationship_rejections} rejected.\n"
+        f"REFLECTION NOTES FOR {active_player_name}: {reflections_successes} succeeded, {reflections_rejections} rejected."
+      )
 
     return conclusion
 
@@ -477,7 +543,9 @@ def run_simulation(
       "Academic calendar": calendar,
       "Relationship states": relationships,
       "Communication state": communication,
-      "Weekly plans": weekly_plan
+      "Weekly plans": weekly_plan,
+      "University information": university_information,
+      "Personal notebook": personal_notebook,
   }
 
   # Create the agents with necessary components.
@@ -487,6 +555,7 @@ def run_simulation(
     relationships=relationships,
     communication=communication,
     plan=weekly_plan,
+    notebook=personal_notebook,
     prefab=getattr(config, "AGENT_PREFAB", "basic__Entity"),
   )
 
@@ -549,5 +618,6 @@ def run_simulation(
       "relationship_states": relationships,
       "communication_state": communication,
       "planning_state": weekly_plan,
+      "personal_notebook": personal_notebook,
       "agents": agents,
   }

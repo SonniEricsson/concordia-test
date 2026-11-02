@@ -19,7 +19,8 @@ class ObservationContext(
       *,
       history_length: int = 30,
       batch_size: int = 20,
-      summary_max_tokens: int = 400,
+      summary_max_tokens: int = 4096,
+      summary_max_words: int = 300,
       pre_act_label: str = '\nConversation history',
   ):
     super().__init__(pre_act_label)
@@ -29,7 +30,7 @@ class ObservationContext(
       "summary_max_tokens": summary_max_tokens,
     }
     for name, value in parameters.items():
-      if not isinstance(value, int) or value <= 0:
+      if type(value) is not int or value <= 0:
         raise ValueError(f"{name} must be a positive integer.")
 
     # Number of recent observations that are kept fully.
@@ -37,6 +38,7 @@ class ObservationContext(
     # Number of older observations that are being summarized.
     self._batch_size = batch_size
     self._summary_max_tokens = summary_max_tokens
+    self._summary_max_words = summary_max_words
 
     self._model = model
 
@@ -65,11 +67,14 @@ class ObservationContext(
       old_observations = self._recent_observations[:self._batch_size]
       prompt = (
           "Summarize the old observations for this agent.\n"
+          "Observations can be administration actions such as creating or working on tasks, "
+          "as well as private messages exchanged between colleagues.\n"
+          "Preserve important information, such as who sent and received the messages."
           "The summary should be concise, and not miss any important information.\n"
           "Distinguish between claims and confirmed university facts.\n"
           "Do not invent information.\n"
           "Your goal is to update the conversation summary using the previous summary and older observations.\n"
-          "The updated summary should have at most 300 words.\n\n"
+          f"The updated summary should have at most {self._summary_max_words} words.\n\n"
           f"This is the previous summary:\n{self._summary}\n\n"
           "These are the old observations that you should summarize:\n"
           + "\n\n".join(old_observations)

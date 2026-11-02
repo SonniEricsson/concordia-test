@@ -1,7 +1,21 @@
 ORGANIZATION = "TU Darmstadt"
-DEPARTMENTS = ["Department of Computer Science"]
+DEPARTMENTS = [
+  "Computer Science",
+  "Architecture",
+  "Civil and Environmental Engineering",
+  "Mechanical Engineering",
+  "Electrical Engineering and Information Technology",
+  "Mathematics",
+  "Physics",
+  "Chemistry",
+  "Biology",
+  "Materials and Geosciences",
+  "Law and Economics",
+  "Social Sciences and Historical Studies",
+  "Human Sciences",
+  ]
 
-DEPARTMENT_CHAIR = {"Department of Computer Science": "Alice"}
+DEPARTMENT_CHAIR = {"Computer Science": "Alice"}
 
 AGENTS = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry", "Iris", "Jack"]
 
@@ -14,7 +28,7 @@ TASKS = {
             "Develop a research idea, identify collaborators, and prepare "
             "the application."
         ),
-        "department": "Department of Computer Science",
+        "department": "Computer Science",
         "status": "open",
         "effort": 2,
         "progress": 0,

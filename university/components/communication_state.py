@@ -42,6 +42,7 @@ class CommunicationState(
     messages = []
     # Contains all sent messages for each agent.
     sent_messages = {}
+    conversations = {}
 
     for agent in agents:
       sent_messages[agent] = {}
@@ -54,6 +55,7 @@ class CommunicationState(
       "messages": messages,
       "sent_messages": sent_messages,
       "next_message_id": 1,
+      "conversations": conversations,
     }
 
   def record_event(
@@ -81,6 +83,10 @@ class CommunicationState(
     self._state["messages"].append(message)
     if status == "succeeded":
       self._state["sent_messages"][sender][recipient].append(message)
+      conversation = self.get_conversation(sender, recipient)
+      conversation["messages"].append(message)
+      conversation["message_count"] += 1
+
     self._state["next_message_id"] += 1
 
     self._logging_channel({
@@ -89,9 +95,35 @@ class CommunicationState(
         "Value": message,
     })
 
+  def get_conversation(
+      self,
+      sender: str,
+      recipient: str,
+  ) -> dict[str, str]:
+    week = self._calendar.get_week()
+    participants = sorted([sender, recipient])
+    conversation_id = f"week{week}_{participants[0]}_{participants[1]}"
+
+    conversations = self._state["conversations"]
+
+    if conversation_id not in conversations:
+      conversation = {
+        "conversation_id": conversation_id,
+        "week": week,
+        "participants": participants,
+        "message_count": 0,
+        "messages": [],
+        #"status": "open",
+        #"finish_reasoning": None,
+      }
+      conversations[conversation_id] = conversation
+
+    return conversations[conversation_id]
+
+
   def send_messages(
       self,
-      agent: str,
+      sender: str,
       proposed_action: str,
   ) -> list[dict[str, Any]]:
     """Send messages from agent, called in run_simulation()."""
@@ -99,23 +131,24 @@ class CommunicationState(
     try:
       proposed_json = extract_json(proposed_action)
     except ValueError as error:
-      outcome = f"Communication attempt for {agent} rejected: {error}"
+      outcome = f"Communication attempt for {sender} rejected: {error}"
       raise ValueError(outcome)
     else:
       messages = proposed_json.get("private_messages")
       if not isinstance(messages, list):
-        raise ValueError(f"Communication attempt for {agent} rejected: private_messages is not a valid list.")
+        raise ValueError(f"Communication attempt for {sender} rejected: private_messages is not a valid list.")
 
       week = self._calendar.get_week()
       phase = self._calendar.get_phase()
 
       if phase != "communication":
-        raise ValueError(f"Communication attempt for {agent} rejected: current phase is communication.")
+        raise ValueError(f"Communication attempt for {sender} rejected: current phase is communication.")
 
       if messages != []:
         for message in messages:
           recipient = None
           content = None
+          #conversation_id = None
           status = "succeeded"
           failure_type = None
           if not isinstance(message, dict):
@@ -124,7 +157,9 @@ class CommunicationState(
           else:
             recipient = message.get("recipient")
             content = message.get("message")
-            if recipient == None or recipient not in self._agents or recipient == agent:
+            #conversation_id = message.get("conversation_id")
+            #conversations = self._state["conversations"]
+            if not isinstance(recipient, str) or recipient not in self._agents or recipient == sender:
               status = "rejected"
               failure_type = "invalid_recipient"
             elif not isinstance(content, str) or content == "":
@@ -133,11 +168,20 @@ class CommunicationState(
             elif len(content.split()) > self._max_words:
               status = "rejected"
               failure_type = "invalid_message_length"
+            #else:
+            #  participants = sorted([sender, recipient])
+            #  current_conversation_id = f"week{week}_{participants[0]}_{participants[1]}"
+            #  if current_conversation_id not in conversations and conversation_id != None:
+            #      status = "rejected"
+            #      failure_type = "invalid_conversation_id"
+            #  elif current_conversation_id in conversations and conversation_id != current_conversation_id:
+            #    status = "rejected"
+            #    failure_type = "wrong_conversation_id"
 
           # Record each message, invalid ones as well.
           self.record_event(
             week=week,
-            sender=agent,
+            sender=sender,
             recipient=recipient,
             content=content,
             status=status,
@@ -152,17 +196,26 @@ class CommunicationState(
       self,
       agent: str,
   ) -> list[dict[str, Any]]:
-    """Get all messages of an agent."""
+    """Get recent messages of an agent."""
+    week = self._calendar.get_week()
+    available_weeks = (week, week - 1)
     sent_messages = []
     received_messages = []
     for message in self._state["messages"]:
-      if agent == message["sender"]:
+      if message["sender"] == agent and message["week"] in available_weeks:
         sent_messages.append(message)
-      elif agent == message["recipient"] and message["status"] == "succeeded":
+      elif message["recipient"] == agent and message["status"] == "succeeded" and message["week"] in available_weeks:
         received_messages.append(message)
+    conversations = []
+    for conversation in self._state["conversations"].values():
+      # Only get conversations from this week.
+      if agent in conversation["participants"] and conversation["week"] in available_weeks:
+        conversations.append(conversation)
+
     messages = {
       "sent_messages": sent_messages,
       "received_messages": received_messages,
+      "conversations": conversations,
     }
     return copy.deepcopy(messages)
 

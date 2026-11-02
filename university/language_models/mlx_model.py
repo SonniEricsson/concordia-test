@@ -55,7 +55,14 @@ class MlxModel(language_model.LanguageModel):
         #extra_body={"top_k": top_k}
     )
 
-    return (response.choices[0].message.content or "").strip()
+    choice = response.choices[0]
+    message = choice.message.model_dump()
+    content = message.get("content")
+
+    text = (content or "").strip()
+
+    return text
+    #return (response.choices[0].message.content or "").strip()
 
   def sample_choice(
       self,
